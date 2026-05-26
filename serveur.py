@@ -1,4 +1,4 @@
-# serveur.py - Version 8
+# serveur.py - Version 8.1 (Correction Spectateur & Nettoyage des connexions)
 import os
 import random
 from flask import Flask, render_template, request
@@ -85,7 +85,6 @@ def chercher_rafles_pion(grille, l, c, couleur, est_dame, pions_manges_actuels=N
 def calculer_meilleurs_coups(grille, l, c, couleur):
     val = grille[l][c]
     est_dame = val in [3, 4]
-    
     rafles = chercher_rafles_pion(grille, l, c, couleur, est_dame)
     
     if rafles:
@@ -158,10 +157,8 @@ def on_join(data):
     
     role = "tout"
     if mode == "web":
-        if p["joueurs"]["blanc"] == sid:
-            role = "blanc"
-        elif p["joueurs"]["noir"] == sid:
-            role = "noir"
+        if p["joueurs"]["blanc"] == sid: role = "blanc"
+        elif p["joueurs"]["noir"] == sid: role = "noir"
         elif p["joueurs"]["blanc"] is None:
             p["joueurs"]["blanc"] = sid
             role = "blanc"
@@ -173,6 +170,16 @@ def on_join(data):
 
     emit('assigner_couleur', {"couleur": role})
     emit('mise_a_jour', {"grille": p["grille"], "tour": p["tour"], "termine": None, "mode": p["mode"]})
+
+# --- NOUVEAU : NETTOYAGE IMMÉDIAT EN CAS DE FERMETURE D'ONGLET ---
+@socketio.on('disconnect')
+def on_disconnect():
+    sid = request.sid
+    for room, p in parties.items():
+        if p["joueurs"]["blanc"] == sid:
+            p["joueurs"]["blanc"] = None
+        elif p["joueurs"]["noir"] == sid:
+            p["joueurs"]["noir"] = None
 
 @socketio.on('demande_coups')
 def on_demande_coups(data):
@@ -276,4 +283,5 @@ def on_recommencer(data):
         emit('mise_a_jour', {"grille": parties[room]["grille"], "tour": parties[room]["tour"], "termine": None, "mode": parties[room]["mode"]}, room=room)
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, host='0.0.0.0', port=port)
