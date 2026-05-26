@@ -1,4 +1,4 @@
-# serveur.py - Version 7
+# serveur.py - Version 8
 import os
 import random
 from flask import Flask, render_template, request
@@ -27,7 +27,6 @@ def copier_grille(grille):
     return [ligne[:] for ligne in grille]
 
 def chercher_rafles_pion(grille, l, c, couleur, est_dame, pions_manges_actuels=None):
-    """Trouve récursivement toutes les trajectoires de rafles (prises multiples) possibles."""
     if pions_manges_actuels is None:
         pions_manges_actuels = []
 
@@ -43,11 +42,9 @@ def chercher_rafles_pion(grille, l, c, couleur, est_dame, pions_manges_actuels=N
                 cible = grille[ml][mc]
                 if cible == 0:
                     if adversaire_trouve and (ml, mc) not in pions_manges_actuels:
-                        # Simulation du coup
                         nouvelle_grille = copier_grille(grille)
                         nouvelle_grille[ml][mc] = nouvelle_grille[l][c]
                         nouvelle_grille[l][c] = 0
-                        # On ne supprime pas encore physiquement pour la récursion mais on le note
                         manges = pions_manges_actuels + [case_pion_mange]
                         
                         sub_rafles = chercher_rafles_pion(nouvelle_grille, ml, mc, couleur, est_dame, manges)
@@ -86,7 +83,6 @@ def chercher_rafles_pion(grille, l, c, couleur, est_dame, pions_manges_actuels=N
     return rafles_trouvees
 
 def calculer_meilleurs_coups(grille, l, c, couleur):
-    """Calcule les coups. Si des prises existent, renvoie UNIQUEMENT celles qui mangent le maximum de pions."""
     val = grille[l][c]
     est_dame = val in [3, 4]
     
@@ -98,7 +94,7 @@ def calculer_meilleurs_coups(grille, l, c, couleur):
         
         coups_prises = {}
         for r in meilleures_rafles:
-            coups_prises[r["fin"]] = r["manges"] # Associe la case finale à la liste des pions à gober
+            coups_prises[r["fin"]] = r["manges"]
         return {"prises": coups_prises, "normaux": {}}
 
     coups_normaux = {}
@@ -120,7 +116,6 @@ def calculer_meilleurs_coups(grille, l, c, couleur):
     return {"prises": {}, "normaux": coups_normaux}
 
 def verifier_prises_globales(grille, couleur):
-    """Scanne le plateau pour savoir quel est le nombre maximum de pions qu'on peut manger ce tour-ci."""
     toutes_prises = {}
     max_absolu = 0
     
@@ -161,7 +156,6 @@ def on_join(data):
     
     p = parties[room]
     
-    # Attribution stricte des rôles en mode Web
     role = "tout"
     if mode == "web":
         if p["joueurs"]["blanc"] == sid:
@@ -210,26 +204,22 @@ def on_jouer_coup(data):
 
     fl, fc = data['from_l'], data['from_c']
     tl, tc = data['to_l'], data['to_c']
-    manges = data['manges'] # C'est maintenant une LISTE de chaînes "l,c"
+    manges = data['manges']
 
     grille = p["grille"]
     val = grille[fl][fc]
     
-    # Déplacement direct à la case finale
     grille[tl][tc] = val
     grille[fl][fc] = 0
 
-    # On supprime TOUS les pions capturés d'un coup
     if manges:
         for m in manges:
             ml, mc = map(int, m.split(','))
             grille[ml][mc] = 0
 
-    # Promotion en dame à la fin du mouvement complet
     if val == 1 and tl == 0: grille[tl][tc] = 3
     if val == 2 and tl == 9: grille[tl][tc] = 4
 
-    # Changement de tour direct
     p["tour"] = "noir" if p["tour"] == "blanc" else "blanc"
 
     if p["mode"] == "ia" and p["tour"] == "noir":
