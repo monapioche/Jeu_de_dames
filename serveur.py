@@ -1,7 +1,7 @@
-# serveur.py - Version 6
+# serveur.py - Version 7
 import os
 import random
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room
 
 app = Flask(__name__)
@@ -14,26 +14,27 @@ def initialiser_grille():
     grille = [[0]*10 for _ in range(10)]
     for l in range(4):
         for c in range(10):
-            if (l + c) % 2 != 0:
-                grille[l][c] = 2
+            if (l + c) % 2 != 0: grille[l][c] = 2
     for l in range(6, 10):
         for c in range(10):
-            if (l + c) % 2 != 0:
-                grille[l][c] = 1
+            if (l + c) % 2 != 0: grille[l][c] = 1
     return grille
 
 def dans_grille(l, c):
     return 0 <= l < 10 and 0 <= c < 10
 
-def calculer_coups_pion(grille, l, c, couleur, suite_rafle=None):
-    coups_normaux = {}
-    prises = {}
-    val = grille[l][c]
-    est_dame = val in [3, 4]
-    directions_toutes = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+def copier_grille(grille):
+    return [ligne[:] for ligne in grille]
 
-    # 1. RECHERCHE DES PRISES
-    for dl, dc in directions_toutes:
+def chercher_rafles_pion(grille, l, c, couleur, est_dame, pions_manges_actuels=None):
+    """Trouve récursivement toutes les trajectoires de rafles (prises multiples) possibles."""
+    if pions_manges_actuels is None:
+        pions_manges_actuels = []
+
+    directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    rafles_trouvees = []
+
+    for dl, dc in directions:
         if est_dame:
             ml, mc = l + dl, c + dc
             adversaire_trouve = False
@@ -41,12 +42,23 @@ def calculer_coups_pion(grille, l, c, couleur, suite_rafle=None):
             while dans_grille(ml, mc):
                 cible = grille[ml][mc]
                 if cible == 0:
-                    if adversaire_trouve:
-                        prises[f"{ml},{mc}"] = case_pion_mange
+                    if adversaire_trouve and (ml, mc) not in pions_manges_actuels:
+                        # Simulation du coup
+                        nouvelle_grille = copier_grille(grille)
+                        nouvelle_grille[ml][mc] = nouvelle_grille[l][c]
+                        nouvelle_grille[l][c] = 0
+                        # On ne supprime pas encore physiquement pour la récursion mais on le note
+                        manges = pions_manges_actuels + [case_pion_mange]
+                        
+                        sub_rafles = chercher_rafles_pion(nouvelle_grille, ml, mc, couleur, est_dame, manges)
+                        if sub_rafles:
+                            rafles_trouvees.extend(sub_rafles)
+                        else:
+                            rafles_trouvees.append({"fin": f"{ml},{mc}", "manges": manges})
                     ml += dl
                     mc += dc
                 elif (couleur == "blanc" and cible in [2, 4]) or (couleur == "noir" and cible in [1, 3]):
-                    if adversaire_trouve: break
+                    if adversaire_trouve or f"{ml},{mc}" in pions_manges_actuels: break
                     adversaire_trouve = True
                     case_pion_mange = f"{ml},{mc}"
                     ml += dl
@@ -58,38 +70,74 @@ def calculer_coups_pion(grille, l, c, couleur, suite_rafle=None):
             but_l, but_c = l + 2*dl, c + 2*dc
             if dans_grille(but_l, but_c) and grille[but_l][but_c] == 0:
                 cible = grille[saut_l][saut_c]
-                if (couleur == "blanc" and cible in [2, 4]) or (couleur == "noir" and cible in [1, 3]):
-                    prises[f"{but_l},{but_c}"] = f"{saut_l},{saut_c}"
+                case_pion_mange = f"{saut_l},{saut_c}"
+                if ((couleur == "blanc" and cible in [2, 4]) or (couleur == "noir" and cible in [1, 3])) and case_pion_mange not in pions_manges_actuels:
+                    nouvelle_grille = copier_grille(grille)
+                    nouvelle_grille[but_l][but_c] = nouvelle_grille[l][c]
+                    nouvelle_grille[l][c] = 0
+                    manges = pions_manges_actuels + [case_pion_mange]
+                    
+                    sub_rafles = chercher_rafles_pion(nouvelle_grille, but_l, but_c, couleur, est_dame, manges)
+                    if sub_rafles:
+                        rafles_trouvees.extend(sub_rafles)
+                    else:
+                        rafles_trouvees.append({"fin": f"{but_l},{but_c}", "manges": manges})
 
-    if suite_rafle:
-        return prises
+    return rafles_trouvees
 
-    # 2. COUPS NORMAUX
+def calculer_meilleurs_coups(grille, l, c, couleur):
+    """Calcule les coups. Si des prises existent, renvoie UNIQUEMENT celles qui mangent le maximum de pions."""
+    val = grille[l][c]
+    est_dame = val in [3, 4]
+    
+    rafles = chercher_rafles_pion(grille, l, c, couleur, est_dame)
+    
+    if rafles:
+        max_manges = max(len(r["manges"]) for r in rafles)
+        meilleures_rafles = [r for r in rafles if len(r["manges"]) == max_manges]
+        
+        coups_prises = {}
+        for r in meilleures_rafles:
+            coups_prises[r["fin"]] = r["manges"] # Associe la case finale à la liste des pions à gober
+        return {"prises": coups_prises, "normaux": {}}
+
+    coups_normaux = {}
     if not est_dame:
         directions_marche = [(-1, -1), (-1, 1)] if couleur == "blanc" else [(1, -1), (1, 1)]
         for dl, dc in directions_marche:
             nl, nc = l + dl, c + dc
             if dans_grille(nl, nc) and grille[nl][nc] == 0:
-                coups_normaux[f"{nl},{nc}"] = None
+                coups_normaux[f"{nl},{nc}"] = []
     else:
+        directions_toutes = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
         for dl, dc in directions_toutes:
             nl, nc = l + dl, c + dc
             while dans_grille(nl, nc) and grille[nl][nc] == 0:
-                coups_normaux[f"{nl},{nc}"] = None
+                coups_normaux[f"{nl},{nc}"] = []
                 nl += dl
                 nc += dc
 
-    return {"prises": prises, "normaux": coups_normaux}
+    return {"prises": {}, "normaux": coups_normaux}
 
 def verifier_prises_globales(grille, couleur):
+    """Scanne le plateau pour savoir quel est le nombre maximum de pions qu'on peut manger ce tour-ci."""
     toutes_prises = {}
+    max_absolu = 0
+    
     for l in range(10):
         for c in range(10):
             val = grille[l][c]
             if (couleur == "blanc" and val in [1, 3]) or (couleur == "noir" and val in [2, 4]):
-                res = calculer_coups_pion(grille, l, c, couleur)
-                if isinstance(res, dict) and res["prises"]:
-                    toutes_prises[f"{l},{c}"] = res["prises"]
+                res = calculer_meilleurs_coups(grille, l, c, couleur)
+                if res["prises"]:
+                    cle_premiere = list(res["prises"].keys())[0]
+                    nb_manges = len(res["prises"][cle_premiere])
+                    if nb_manges > max_absolu:
+                        max_absolu = nb_manges
+                        toutes_prises = {f"{l},{c}": res["prises"]}
+                    elif nb_manges == max_absolu:
+                        toutes_prises[f"{l},{c}"] = res["prises"]
+                        
     return toutes_prises
 
 @app.route('/')
@@ -101,16 +149,35 @@ def on_join(data):
     room = data.get('room', 'default')
     mode = data.get('mode', 'web')
     join_room(room)
+    sid = request.sid
     
     if room not in parties:
         parties[room] = {
             "grille": initialiser_grille(),
             "tour": "blanc",
             "mode": mode,
-            "suite_rafle": None
+            "joueurs": {"blanc": None, "noir": None}
         }
     
     p = parties[room]
+    
+    # Attribution stricte des rôles en mode Web
+    role = "tout"
+    if mode == "web":
+        if p["joueurs"]["blanc"] == sid:
+            role = "blanc"
+        elif p["joueurs"]["noir"] == sid:
+            role = "noir"
+        elif p["joueurs"]["blanc"] is None:
+            p["joueurs"]["blanc"] = sid
+            role = "blanc"
+        elif p["joueurs"]["noir"] is None:
+            p["joueurs"]["noir"] = sid
+            role = "noir"
+        else:
+            role = "spectateur"
+
+    emit('assigner_couleur', {"couleur": role})
     emit('mise_a_jour', {"grille": p["grille"], "tour": p["tour"], "termine": None, "mode": p["mode"]})
 
 @socketio.on('demande_coups')
@@ -124,16 +191,8 @@ def on_demande_coups(data):
     if val == 0: return
     couleur = "blanc" if val in [1, 3] else "noir"
 
-    if p["suite_rafle"]:
-        if f"{l},{c}" != p["suite_rafle"]:
-            emit('afficher_coups', {"coups": {}})
-            return
-        prises = calculer_coups_pion(p["grille"], l, c, couleur, suite_rafle=True)
-        emit('afficher_coups', {"coups": prises})
-        return
-
     prises_globales = verifier_prises_globales(p["grille"], p["tour"])
-    res = calculer_coups_pion(p["grille"], l, c, couleur)
+    res = calculer_meilleurs_coups(p["grille"], l, c, couleur)
 
     if prises_globales:
         if f"{l},{c}" in prises_globales:
@@ -151,30 +210,26 @@ def on_jouer_coup(data):
 
     fl, fc = data['from_l'], data['from_c']
     tl, tc = data['to_l'], data['to_c']
-    mange = data['mange']
+    manges = data['manges'] # C'est maintenant une LISTE de chaînes "l,c"
 
     grille = p["grille"]
     val = grille[fl][fc]
     
+    # Déplacement direct à la case finale
     grille[tl][tc] = val
     grille[fl][fc] = 0
 
-    if mange:
-        ml, mc = map(int, mange.split(','))
-        grille[ml][mc] = 0
-        couleur = "blanc" if val in [1, 3] else "noir"
-        nouvelles_prises = calculer_coups_pion(grille, tl, tc, couleur, suite_rafle=True)
-        
-        if nouvelles_prises:
-            p["suite_rafle"] = f"{tl},{tc}"
-            emit('mise_a_jour', {"grille": grille, "tour": p["tour"], "termine": None, "mode": p["mode"]}, room=room)
-            return
+    # On supprime TOUS les pions capturés d'un coup
+    if manges:
+        for m in manges:
+            ml, mc = map(int, m.split(','))
+            grille[ml][mc] = 0
 
-    # Promotion en dame uniquement si le tour s'arrête ici
+    # Promotion en dame à la fin du mouvement complet
     if val == 1 and tl == 0: grille[tl][tc] = 3
     if val == 2 and tl == 9: grille[tl][tc] = 4
 
-    p["suite_rafle"] = None
+    # Changement de tour direct
     p["tour"] = "noir" if p["tour"] == "blanc" else "blanc"
 
     if p["mode"] == "ia" and p["tour"] == "noir":
@@ -194,37 +249,31 @@ def jouer_coup_ia(p, room):
         arrivee = random.choice(list(prises_globales[depart].keys()))
         fl, fc = map(int, depart.split(','))
         tl, tc = map(int, arrivee.split(','))
-        mange = prises_globales[depart][arrivee]
+        manges = prises_globales[depart][arrivee]
     else:
         coups_possibles = []
         for l in range(10):
             for c in range(10):
                 if grille[l][c] in [2, 4]:
-                    res = calculer_coups_pion(grille, l, c, "noir")
+                    res = calculer_meilleurs_coups(grille, l, c, "noir")
                     for dest in res["normaux"]:
                         coups_possibles.append(((l, c), map(int, dest.split(','))))
         if not coups_possibles:
             emit('mise_a_jour', {"grille": grille, "tour": "blanc", "termine": "Victoire des Blancs !", "mode": p["mode"]}, room=room)
             return
         (fl, fc), (tl, tc) = random.choice(coups_possibles)
-        mange = None
+        manges = []
 
     val = grille[fl][fc]
     grille[tl][tc] = val
     grille[fl][fc] = 0
     
-    if mange:
-        ml, mc = map(int, mange.split(','))
-        grille[ml][mc] = 0
-        nouvelles_prises = calculer_coups_pion(grille, tl, tc, "noir", suite_rafle=True)
-        if nouvelles_prises:
-            socketio.sleep(0.5)
-            p["suite_rafle"] = f"{tl},{tc}"
-            jouer_coup_ia(p, room)
-            return
+    if manges:
+        for m in manges:
+            ml, mc = map(int, m.split(','))
+            grille[ml][mc] = 0
 
     if val == 2 and tl == 9: grille[tl][tc] = 4
-    p["suite_rafle"] = None
     p["tour"] = "blanc"
     emit('mise_a_jour', {"grille": grille, "tour": p["tour"], "termine": None, "mode": p["mode"]}, room=room)
 
@@ -234,7 +283,6 @@ def on_recommencer(data):
     if room in parties:
         parties[room]["grille"] = initialiser_grille()
         parties[room]["tour"] = "blanc"
-        parties[room]["suite_rafle"] = None
         emit('mise_a_jour', {"grille": parties[room]["grille"], "tour": parties[room]["tour"], "termine": None, "mode": parties[room]["mode"]}, room=room)
 
 if __name__ == '__main__':
