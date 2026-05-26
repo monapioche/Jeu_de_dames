@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jeu de Dames - V6</title>
+    <title>Jeu de Dames - V7</title>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         body { background-color: #1a1a1a; color: white; font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; }
@@ -15,7 +15,8 @@
         #btn-en-ligne { background-color: #d35400; }
         .btn-menu:hover { opacity: 0.9; transform: scale(1.02); }
         #zone-jeu { display: none; }
-        #info { font-size: 18px; margin-bottom: 15px; color: #FFD700; font-weight: bold; }
+        #info-role { font-size: 16px; color: #a0a0a0; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; }
+        #info { font-size: 20px; margin-bottom: 15px; color: #FFD700; font-weight: bold; }
         #damier { display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(10, 1fr); width: 90vw; max-width: 450px; aspect-ratio: 1 / 1; margin: 0 auto; border: 4px solid #333; }
         .case { display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; }
         .beige { background-color: #DDBB99; }
@@ -25,7 +26,7 @@
         .noir { background-color: #8B0000; }
         .dame::after { content: "♔"; font-size: 20px; color: black; display: block; text-align: center; line-height: 30px; font-weight: bold; }
         .selectionne { border: 3px solid #FFD700 !important; box-sizing: border-box; }
-        .coup-possible::before { content: ""; width: 30%; height: 30%; background-color: rgba(0,255,0,0.6); border: 1px solid black; border-radius: 50%; position: absolute; z-index: 10; }
+        .coup-possible::before { content: ""; width: 34%; height: 34%; background-color: rgba(46, 204, 113, 0.8); border: 1px solid black; border-radius: 50%; position: absolute; z-index: 10; }
         #boutons { margin-top: 20px; }
         .btn-action { background-color: #7f8c8d; color: white; border: none; padding: 10px 20px; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 5px; margin: 5px; }
         .btn-action:hover { opacity: 0.9; }
@@ -42,6 +43,7 @@
 
     <div id="zone-jeu">
         <h1 id="titre-mode">PARTIE</h1>
+        <div id="info-role">Rôle : Assignation...</div>
         <div id="info">Connexion...</div>
         <div id="damier"></div>
         <div id="boutons">
@@ -58,6 +60,7 @@
         let monTour = false;
         let modeActuel = "";
         let maChambre = "default";
+        let monRole = ""; 
 
         function choisirMode(mode) {
             modeActuel = mode;
@@ -68,7 +71,8 @@
             if (mode === 'local') document.getElementById('titre-mode').innerText = "👥 MODE LOCAL (1 ÉCRAN)";
             if (mode === 'web') document.getElementById('titre-mode').innerText = "🌐 MODE À DISTANCE";
 
-            maChambre = mode === 'web' ? 'salon_web' : 'salon_' + Math.random();
+            // Salon unique pour l'IA/Local pour ne pas croiser d'autres joueurs
+            maChambre = mode === 'web' ? 'salon_web_fixe' : 'salon_' + Math.random();
             socket.emit('join', { room: maChambre, mode: mode });
         }
 
@@ -77,11 +81,22 @@
             document.getElementById('menu-principal').style.display = 'flex';
         }
 
+        socket.on('assigner_couleur', (data) => {
+            monRole = data.couleur;
+            let texteRole = "";
+            if (monRole === "blanc") texteRole = "⚪ JOUEUR BLANC (Tu contrôles les Blancs)";
+            if (monRole === "noir") texteRole = "⚫ JOUEUR NOIR (Tu contrôles les Noirs)";
+            if (monRole === "spectateur") texteRole = "👁️ SPECTATEUR (Regarde la partie)";
+            if (monRole === "tout") texteRole = "🎮 Mode Libre / Local";
+            document.getElementById('info-role').innerText = texteRole;
+        });
+
         socket.on('mise_a_jour', (data) => {
             plateauActuel = data.grille;
             
+            // Calcul du droit de jouer
             if (modeActuel === 'web') {
-                monTour = true; // Géré par le serveur selon l'IP/Session pour simplifier ici
+                monTour = (data.tour === monRole);
             } else if (modeActuel === 'local') {
                 monTour = true;
             } else if (modeActuel === 'ia') {
@@ -92,6 +107,10 @@
             coupsPossibles = {};
             
             let txtStatus = data.termine ? data.termine : `Tour : ${data.tour.toUpperCase()}`;
+            if (!data.termine && modeActuel === 'web') {
+                if (monTour) txtStatus += " 🟢 (À TOI DE JOUER !)";
+                else txtStatus += " 🔴 (En attente de l'adversaire...)";
+            }
             if (!data.termine && modeActuel === 'ia' && data.tour === 'noir') txtStatus = "🤖 L'IA réfléchit...";
 
             document.getElementById('info').innerText = txtStatus;
@@ -130,14 +149,14 @@
         }
 
         function clicCase(l, c) {
-            if (!monTour) return;
+            if (!monTour || monRole === "spectateur") return;
             const val = plateauActuel[l][c];
             let tourActuel = document.getElementById('info').innerText.includes("BLANC") ? "blanc" : "noir";
             if (modeActuel === 'ia') tourActuel = "blanc";
 
             const equipePion = (val === 1 || val === 3) ? 'blanc' : (val === 2 || val === 4) ? 'noir' : null;
 
-            if (equipePion && equipePion === tourActuel) {
+            if (equipePion && (modeActuel === 'web' ? equipePion === monRole : equipePion === tourActuel)) {
                 selection = {l, c};
                 socket.emit('demande_coups', {room: maChambre, l: l, c: c});
             } else if (selection && coupsPossibles[`${l},${c}`] !== undefined) {
@@ -145,7 +164,7 @@
                     room: maChambre,
                     from_l: selection.l, from_c: selection.c,
                     to_l: l, to_c: c,
-                    mange: coupsPossibles[`${l},${c}`]
+                    manges: coupsPossibles[`${l},${c}`]
                 });
             }
         }
